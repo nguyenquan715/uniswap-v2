@@ -12,6 +12,9 @@ interface IERC20 {
 error InsufficientLiquidityMinted();
 error InsufficientLiquidityBurned();
 error TransferFailed();
+error InsufficientOutputAmount();
+error InsufficientLiquidity();
+error InvalidK();
 
 contract UniswapV2Pair is ERC20, Math {
   uint256 constant MINIMUM_LIQUIDITY = 1000;
@@ -25,12 +28,19 @@ contract UniswapV2Pair is ERC20, Math {
   event Mint(address indexed sender, uint256 amount0, uint256 amount1);
   event Burn(address indexed sender, uint256 amount0, uint256 amount1);
   event Sync(uint256 reserve0, uint256 reserve1);
+  event Swap(
+    address indexed sender,
+    uint256 amount0Out,
+    uint256 amount1Out,
+    address indexed to
+  );
   
   constructor(address token0_, address token1_) ERC20("Uniswap V2", "UNIV2", 18) {
     token0 = token0_;
     token1 = token1_;
   }
 
+  // Mint LP tokens for user after user adds liquidity
   function mint() public {
     uint256 balance0 = IERC20(token0).balanceOf(address(this));
     uint256 balance1 = IERC20(token1).balanceOf(address(this));
@@ -57,6 +67,7 @@ contract UniswapV2Pair is ERC20, Math {
     emit Mint(msg.sender, depositAmount0, depositAmount1);
   }
 
+  // Burn LP tokens after user removes liquidity
   function burn() pulbic {
     uint256 balance0 = IERC20(token0).balanceOf(address(this));
     uint256 balance1 = IERC20(token1).balanceOf(address(this));
@@ -76,6 +87,25 @@ contract UniswapV2Pair is ERC20, Math {
      _update(balance0, balance1);
 
     emit Burn(msg.sender, removeAmount0, removeAmount1);
+  }
+
+  // Transfer token0 or token1 or both to user after user performs swap transaction
+  function swap(uint256 amountOut0, uint256 amountOut1, address to) public {
+    if (amountOut0 == 0 && amountOut1 == 0) revert InsufficientOutputAmount();
+
+    (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
+    if(amountOut0 > reserve0_ || amountOut1 > reserve1_) revert InsufficientLiquidity();
+
+    uint256 balance0 = IERC20(token0).balanceOf(address(this)) - amountOut0;
+    uint256 balance1 = IERC20(token1).balanceOf(address(this)) - amountOut1;
+    if (balance0 * balance1 < uint256(reserve0_) * uint256(reserve1_)) revert InvalidK();
+
+    _update(balance0, balance1);
+
+    if (amountOut0 > 0) _safeTransfer(token0, to, amountOut0);
+    if (amountOut1 > 0) _safeTransfer(token1, to, amountOut1);
+
+    emit Swap(msg.sender, amount0Out, amount1Out, to); 
   }
 
   function sync() public {
