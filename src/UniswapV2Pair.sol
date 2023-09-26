@@ -3,20 +3,24 @@ pragma solidity ^0.8.13;
 
 import "solmate/tokens/ERC20.sol";
 import "./libraries/Math.sol";
+import "./libraries/UQ112x112.sol";
 
 interface IERC20 {
   function balanceOf(address) external returns (uint256);
   function transfer(address to, uint256 amount) external;
 }
 
+error BalanceOverflow();
 error InsufficientLiquidityMinted();
 error InsufficientLiquidityBurned();
-error TransferFailed();
 error InsufficientOutputAmount();
 error InsufficientLiquidity();
+error TransferFailed();
 error InvalidK();
 
 contract UniswapV2Pair is ERC20, Math {
+  using UQ112x112 for uint224;
+
   uint256 constant MINIMUM_LIQUIDITY = 1000;
 
   address public token0;
@@ -24,6 +28,10 @@ contract UniswapV2Pair is ERC20, Math {
 
   uint112 private reserve0;
   uint112 private reserve1;
+  uint32 private blockTimestampLast;
+
+  uint256 public price0CumulativeLast;
+  uint256 public price1CumulativeLast;
 
   event Mint(address indexed sender, uint256 amount0, uint256 amount1);
   event Burn(address indexed sender, uint256 amount0, uint256 amount1);
@@ -42,11 +50,12 @@ contract UniswapV2Pair is ERC20, Math {
 
   // Mint LP tokens for user after user adds liquidity
   function mint() public {
+    (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
     uint256 balance0 = IERC20(token0).balanceOf(address(this));
     uint256 balance1 = IERC20(token1).balanceOf(address(this));
 
-    uint256 depositAmount0 = balance0 - reserve0;
-    uint256 depositAmount1 = balance1 - reserve1;
+    uint256 depositAmount0 = balance0 - reserve0_;
+    uint256 depositAmount1 = balance1 - reserve1_;
 
     // Init liquidity
     uint256 liquidity;
@@ -55,23 +64,23 @@ contract UniswapV2Pair is ERC20, Math {
       _mint(address(0), MINIMUM_LIQUIDITY);
     } else {
       liquidity = Math.min(
-        (totalSupply * depositAmount0) / reserve0, 
-        (totalSupply * depositAmount1) / reserve1
+        (totalSupply * depositAmount0) / reserve0_, 
+        (totalSupply * depositAmount1) / reserve1_
       );
     }
     if (liquidity <= 0) revert InsufficientLiquidityMinted();
 
     _mint(msg.sender, liquidity);
-    _update(balance0, balance1);
+    _update(balance0, balance1, reserve0_, reserve1_);
 
     emit Mint(msg.sender, depositAmount0, depositAmount1);
   }
 
   // Burn LP tokens after user removes liquidity
-  function burn() pulbic {
+  function burn() public {
     uint256 balance0 = IERC20(token0).balanceOf(address(this));
     uint256 balance1 = IERC20(token1).balanceOf(address(this));
-    uint256 liquidity = balanceOf(msg.sender);
+    uint256 liquidity = balanceOf[msg.sender];
 
     uint256 removeAmount0 = (balance0 * liquidity) / totalSupply;
     uint256 removeAmount1 = (balance1 * liquidity) / totalSupply;
@@ -84,44 +93,62 @@ contract UniswapV2Pair is ERC20, Math {
 
     balance0 = IERC20(token0).balanceOf(address(this));
     balance1 = IERC20(token1).balanceOf(address(this));
-     _update(balance0, balance1);
+
+    (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
+    _update(balance0, balance1, reserve0_, reserve1_);
 
     emit Burn(msg.sender, removeAmount0, removeAmount1);
   }
 
   // Transfer token0 or token1 or both to user after user performs swap transaction
-  function swap(uint256 amountOut0, uint256 amountOut1, address to) public {
-    if (amountOut0 == 0 && amountOut1 == 0) revert InsufficientOutputAmount();
+  function swap(uint256 amount0Out, uint256 amount1Out, address to) public {
+    if (amount0Out == 0 && amount1Out == 0) revert InsufficientOutputAmount();
 
     (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
-    if(amountOut0 > reserve0_ || amountOut1 > reserve1_) revert InsufficientLiquidity();
+    if(amount0Out > reserve0_ || amount1Out > reserve1_) revert InsufficientLiquidity();
 
-    uint256 balance0 = IERC20(token0).balanceOf(address(this)) - amountOut0;
-    uint256 balance1 = IERC20(token1).balanceOf(address(this)) - amountOut1;
+    uint256 balance0 = IERC20(token0).balanceOf(address(this)) - amount0Out;
+    uint256 balance1 = IERC20(token1).balanceOf(address(this)) - amount1Out;
     if (balance0 * balance1 < uint256(reserve0_) * uint256(reserve1_)) revert InvalidK();
 
-    _update(balance0, balance1);
+    _update(balance0, balance1, reserve0_, reserve1_);
 
-    if (amountOut0 > 0) _safeTransfer(token0, to, amountOut0);
-    if (amountOut1 > 0) _safeTransfer(token1, to, amountOut1);
+    if (amount0Out > 0) _safeTransfer(token0, to, amount0Out);
+    if (amount1Out > 0) _safeTransfer(token1, to, amount1Out);
 
     emit Swap(msg.sender, amount0Out, amount1Out, to); 
   }
 
   function sync() public {
+    (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
     _update(
       IERC20(token0).balanceOf(address(this)),
-      IERC20(token1).balanceOf(address(this))
+      IERC20(token1).balanceOf(address(this)),
+      reserve0_, reserve1_
     );
   }
 
   function getReserves() public view returns (uint112, uint112, uint32) {
-    return (reserve0, reserve1, 0);
+    return (reserve0, reserve1, blockTimestampLast);
   }
 
-  function _update(uint256 balance0, uint256 balance1) private {
+  /*
+  * PRIVATE
+  */
+  function _update(uint256 balance0, uint256 balance1, uint112 reserve0_, uint112 reserve1_) private {
+    if (balance0 > type(uint112).max || balance1 > type(uint112).max) revert BalanceOverflow();
+
+    unchecked {
+      uint32 timeElapsed = uint32(block.timestamp) - blockTimestampLast;
+      if (timeElapsed > 0 && reserve0_ > 0 && reserve1_ > 0) {
+        price0CumulativeLast += uint256(UQ112x112.encode(reserve1_).uqdiv(reserve0_)) * timeElapsed;
+        price1CumulativeLast += uint256(UQ112x112.encode(reserve0_).uqdiv(reserve1_)) * timeElapsed;
+      }
+    }
+
     reserve0 = uint112(balance0);
     reserve1 = uint112(balance1);
+    blockTimestampLast = uint32(block.timestamp);
 
     emit Sync(reserve0, reserve1);
   }
