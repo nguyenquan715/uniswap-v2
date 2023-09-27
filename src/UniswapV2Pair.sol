@@ -10,6 +10,7 @@ interface IERC20 {
   function transfer(address to, uint256 amount) external;
 }
 
+error AlreadyInitialized();
 error BalanceOverflow();
 error InsufficientLiquidityMinted();
 error InsufficientLiquidityBurned();
@@ -43,13 +44,16 @@ contract UniswapV2Pair is ERC20, Math {
     address indexed to
   );
   
-  constructor(address token0_, address token1_) ERC20("Uniswap V2", "UNIV2", 18) {
+  constructor() ERC20("Uniswap V2", "UNIV2", 18) {}
+
+  function initialize(address token0_, address token1_) public {
+    if (token0 != address(0) || token1 != address(0)) revert AlreadyInitialized();
     token0 = token0_;
     token1 = token1_;
   }
 
   // Mint LP tokens for user after user adds liquidity
-  function mint() public {
+  function mint(address to) public returns (uint256 liquidity) {
     (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
     uint256 balance0 = IERC20(token0).balanceOf(address(this));
     uint256 balance1 = IERC20(token1).balanceOf(address(this));
@@ -58,7 +62,6 @@ contract UniswapV2Pair is ERC20, Math {
     uint256 depositAmount1 = balance1 - reserve1_;
 
     // Init liquidity
-    uint256 liquidity;
     if (totalSupply == 0) {
       liquidity = Math.sqrt(depositAmount0 * depositAmount1) - MINIMUM_LIQUIDITY;
       _mint(address(0), MINIMUM_LIQUIDITY);
@@ -70,10 +73,10 @@ contract UniswapV2Pair is ERC20, Math {
     }
     if (liquidity <= 0) revert InsufficientLiquidityMinted();
 
-    _mint(msg.sender, liquidity);
+    _mint(to, liquidity);
     _update(balance0, balance1, reserve0_, reserve1_);
 
-    emit Mint(msg.sender, depositAmount0, depositAmount1);
+    emit Mint(to, depositAmount0, depositAmount1);
   }
 
   // Burn LP tokens after user removes liquidity
