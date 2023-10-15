@@ -35,7 +35,7 @@ contract UniswapV2Pair is ERC20, Math {
   uint256 public price1CumulativeLast;
 
   event Mint(address indexed sender, uint256 amount0, uint256 amount1);
-  event Burn(address indexed sender, uint256 amount0, uint256 amount1);
+  event Burn(address indexed sender, uint256 amount0, uint256 amount1, address to);
   event Sync(uint256 reserve0, uint256 reserve1);
   event Swap(
     address indexed sender,
@@ -80,19 +80,19 @@ contract UniswapV2Pair is ERC20, Math {
   }
 
   // Burn LP tokens after user removes liquidity
-  function burn() public {
+  function burn(address to) public {
     uint256 balance0 = IERC20(token0).balanceOf(address(this));
     uint256 balance1 = IERC20(token1).balanceOf(address(this));
-    uint256 liquidity = balanceOf[msg.sender];
+    uint256 liquidity = balanceOf[address(this)];
 
     uint256 removeAmount0 = (balance0 * liquidity) / totalSupply;
     uint256 removeAmount1 = (balance1 * liquidity) / totalSupply;
 
-    if (removeAmount0 <= 0 || removeAmount1 <= 0) revert InsufficientLiquidityBurned();
+    if (removeAmount0 == 0 || removeAmount1 == 0) revert InsufficientLiquidityBurned();
 
-    _burn(msg.sender, liquidity);
-    _safeTransfer(token0, msg.sender, removeAmount0);
-    _safeTransfer(token1, msg.sender, removeAmount1);
+    _burn(address(this), liquidity);
+    _safeTransfer(token0, to, removeAmount0);
+    _safeTransfer(token1, to, removeAmount1);
 
     balance0 = IERC20(token0).balanceOf(address(this));
     balance1 = IERC20(token1).balanceOf(address(this));
@@ -100,7 +100,7 @@ contract UniswapV2Pair is ERC20, Math {
     (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
     _update(balance0, balance1, reserve0_, reserve1_);
 
-    emit Burn(msg.sender, removeAmount0, removeAmount1);
+    emit Burn(msg.sender, removeAmount0, removeAmount1, to);
   }
 
   // Transfer token0 or token1 or both to user after user performs swap transaction

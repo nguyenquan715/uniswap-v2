@@ -8,7 +8,9 @@ import "./UniswapV2Library.sol";
 contract UniswapV2Router {
   error InsufficientAAmount();
   error InsufficientBAmount();
+  error InsufficientOutputAmount();
   error SafeTransferFailed();
+  error ExcessiveInputAmount();
 
   IUniswapV2Factory factory;
 
@@ -45,9 +47,69 @@ contract UniswapV2Router {
     liquidity = IUniswapV2Pair(pairAddress).mint(to);
   }
 
+  function removeLiquidity(
+    address tokenA,
+    address tokenB,
+    uint256 liquidity,
+    uint256 amountAMin,
+    uint256 amountBMin,
+    address to
+  ) public returns (uint256 amountA, uint256 amountB) {
+    address pairAddress = UniswapV2Library.pairFor(address(factory), tokenA, tokenB);
+    IUniswapV2Pair(pairAddress).transferFrom(msg.sender, pairAddress, liquidity);
+    (amountA, amountB) = IUniswapV2Pair(pairAddress).burn(to);
+
+    if(amountA < amountAMin) revert InsufficientAAmount();
+    if(amountB < amountBMin) revert InsufficientBAmount();
+  }
+
+  function swapExactTokensForTokens(
+    uint256 amountIn,
+    uint256 amountOutMin,
+    address[] memory path,
+    address to
+  ) public returns (uint256[] memory amounts) {
+    amounts = UniswapV2Library.getAmountsOut(address(factory), amountIn, path);
+    if(amounts[amounts.length - 1] < amountOutMin) revert InsufficientOutputAmount();
+    _safeTransferFrom(
+      path[0], 
+      msg.sender,
+      UniswapV2Library.pairFor(address(factory), path[0], path[1]),     
+      amounts[0]
+    );
+    _swap(amounts, path, to);
+  }
+
+  function swapTokensForExactTokens(
+    uint256 amountOut,
+    uint256 amountInMax,
+    address[] memory path,
+    address to
+  ) public returns (uint256[] memory amounts) {
+    amounts = UniswapV2Library.getAmountsIn(address(factory), amountOut, path);
+    if (amounts[0] > amountInMax) revert ExcessiveInputAmount();
+    _safeTransferFrom(
+      path[0],
+      msg.sender,
+      UniswapV2Library.pairFor(address(factory), path[0], path[1]), 
+      amounts[0]
+    );
+    _swap(amounts, path, to);
+  }
   /*
   * PRIVATE
   */
+  function _swap(uint256[] memory amounts, address[] memory path, address to) internal {
+    for (uint256 i; i < path.length - 1; i += 1) {
+      (address input, address output) = (path[i], path[i + 1]);
+      (address token0, ) = UniswapV2Library.sortTokens(input, output);
+      uint256 amountOut = amounts[i + 1];
+      (uint256 amount0Out, uint256 amount1Out) = input == token0 ? (uint256(0), amountOut) : (amountOut, uint256(0));
+      address recipient = i == path.length - 2 ? to : UniswapV2Library.pairFor(address(factory), output, path[i + 2]);
+      IUniswapV2Pair(UniswapV2Library.pairFor(address(factory), input, output)).swap(amount0Out, amount1Out, recipient, "");
+    }
+  }
+
   function _calculateLiquidity(
     address tokenA, 
     address tokenB,
