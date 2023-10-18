@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 import "solmate/tokens/ERC20.sol";
 import "./libraries/Math.sol";
 import "./libraries/UQ112x112.sol";
+import "./interfaces/IUniswapV2Callee.sol";
 
 interface IERC20 {
   function balanceOf(address) external returns (uint256);
@@ -15,6 +16,7 @@ error BalanceOverflow();
 error InsufficientLiquidityMinted();
 error InsufficientLiquidityBurned();
 error InsufficientOutputAmount();
+error InsufficientInputAmount();
 error InsufficientLiquidity();
 error TransferFailed();
 error InvalidK();
@@ -104,20 +106,35 @@ contract UniswapV2Pair is ERC20, Math {
   }
 
   // Transfer token0 or token1 or both to user after user performs swap transaction
-  function swap(uint256 amount0Out, uint256 amount1Out, address to) public {
+  function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) public {
     if (amount0Out == 0 && amount1Out == 0) revert InsufficientOutputAmount();
 
     (uint112 reserve0_, uint112 reserve1_, ) = getReserves();
     if(amount0Out > reserve0_ || amount1Out > reserve1_) revert InsufficientLiquidity();
 
-    uint256 balance0 = IERC20(token0).balanceOf(address(this)) - amount0Out;
-    uint256 balance1 = IERC20(token1).balanceOf(address(this)) - amount1Out;
-    if (balance0 * balance1 < uint256(reserve0_) * uint256(reserve1_)) revert InvalidK();
+    if (amount0Out > 0) _safeTransfer(token0, to, amount0Out);
+    if (amount1Out > 0) _safeTransfer(token1, to, amount1Out);
+    if (data.length > 0)
+      IUniswapV2Callee(to).uniswapV2Call(
+        msg.sender,
+        amount0Out,
+        amount1Out,
+        data
+      );
+
+    uint256 balance0 = IERC20(token0).balanceOf(address(this));
+    uint256 balance1 = IERC20(token1).balanceOf(address(this));
+
+    uint256 amount0In = balance0 > reserve0 - amount0Out ? balance0 - (reserve0 - amount0Out) : 0;
+    uint256 amount1In = balance1 > reserve1 - amount1Out ? balance1 - (reserve1 - amount1Out) : 0;
+    if (amount0In == 0 && amount1In == 0) revert InsufficientInputAmount();
+
+    uint256 balance0Adjusted = balance0 * 1000 - amount0In * 3;
+    uint256 balance1Adjusted = balance1 * 1000 - amount1In *3;
+    if (balance0Adjusted * balance1Adjusted < uint256(reserve0_) * uint256(reserve1_) * 1000000) revert InvalidK();
 
     _update(balance0, balance1, reserve0_, reserve1_);
 
-    if (amount0Out > 0) _safeTransfer(token0, to, amount0Out);
-    if (amount1Out > 0) _safeTransfer(token1, to, amount1Out);
 
     emit Swap(msg.sender, amount0Out, amount1Out, to); 
   }
